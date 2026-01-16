@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MBTA Transit Desert Checker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 2rem;
+    max-width: 800px;
+  }
+  input, button {
+    padding: 0.6rem;
+    font-size: 1rem;
+    margin-top: 0.5rem;
+  }
+  button {
+    cursor: pointer;
+  }
+  .warning {
+    font-weight: bold;
+    color: darkred;
+    margin-top: 1rem;
+  }
+  .good {
+    font-weight: bold;
+    color: darkgreen;
+    margin-top: 1rem;
+  }
+  ol {
+    margin-top: 1rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>MBTA Transit Desert Checker</h1>
+<p>Enter an address to find the 3 closest unique MBTA stops.</p>
+
+<input type="text" id="address" placeholder="123 Main St, Natick, MA" size="40">
+<br>
+<button onclick="checkTransit()">Check Transit Access</button>
+
+<div id="result"></div>
+
+<script>
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function modeName(type) {
+  switch (type) {
+    case 0: return "Light Rail / Subway";
+    case 1: return "Heavy Rail";
+    case 2: return "Commuter Rail";
+    case 3: return "Bus";
+    case 4: return "Ferry";
+    default: return "Other";
+  }
+}
+
+async function fetchFormattedRoutes(stopId, vehicleType) {
+  const resp = await fetch(`https://api-v3.mbta.com/routes?filter[stop]=${stopId}`);
+  const data = await resp.json();
+
+  if (!data.data || data.data.length === 0) {
+    return "No route info";
+  }
+
+  if (vehicleType === 3) {
+    return data.data.map(r => {
+      const num = r.attributes.short_name;
+      const name = r.attributes.long_name;
+      return name ? `${num} (${name})` : num;
+    }).join(", ");
+  }
+
+  if (vehicleType === 2) {
+    const cr = data.data.find(r => r.attributes.type === 2);
+    return cr ? `${cr.attributes.long_name} (CR)` : "Commuter Rail";
+  }
+
+  return data.data.map(r =>
+    r.attributes.long_name || r.attributes.short_name
+  ).join(", ");
+}
+
+async function checkTransit() {
+  const address = document.getElementById("address").value.trim();
+  const result = document.getElementById("result");
+  result.textContent = "Loading…";
+
+  if (!address) {
+    result.textContent = "Please enter an address.";
+    return;
+  }
+
+  const geoResp = await fetch(
+    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`
+  );
+  const geoData = await geoResp.json();
+
+  if (!geoData.length) {
+    result.textContent = "Address not found.";
+    return;
+  }
+
+  const lat = parseFloat(geoData[0].lat);
+  const lon = parseFloat(geoData[0].lon);
+
+  const stopsResp = await fetch(
+    `https://api-v3.mbta.com/stops?filter[latitude]=${lat}&filter[longitude]=${lon}&filter[radius]=5`
+  );
+  const stopsData = await stopsResp.json();
+
+  if (!stopsData.data || stopsData.data.length === 0) {
+    result.textContent = "No MBTA stops found nearby.";
+    return;
+  }
+
+  const stopsWithDist = stopsData.data.map(stop => ({
+    stop,
+    distKm: haversine(
+      lat,
+      lon,
+      stop.attributes.latitude,
+      stop.attributes.longitude
+    )
+  }));
+
+  const seen = new Set();
+  const uniqueStops = [];
+
+  for (const item of stopsWithDist) {
+    const parentStation =
+      item.stop.relationships?.parent_station?.data?.id;
+    const uniqueKey = parentStation || item.stop.id;
+    if (!seen.has(uniqueKey)) {
+      uniqueStops.push(item);
+      seen.add(uniqueKey);
+    }
+  }
+
+  uniqueStops.sort((a, b) => a.distKm - b.distKm);
+  const top3 = uniqueStops.slice(0, 3);
+
+  for (const item of top3) {
+    item.routes = await fetchFormattedRoutes(
+      item.stop.id,
+      item.stop.attributes.vehicle_type
+    );
+  }
+
+  const closestKm = top3[0].distKm;
+  const desertThreshold = 1.5;
+
+  let html = "";
+  if (closestKm > desertThreshold) {
+    html += `<div class="warning">You are in a transit desert.</div>`;
+  } else {
+    html += `<div class="good">You have reasonable transit access.</div>`;
+  }
+
+  html += "<ol>";
+  for (const item of top3) {
+    html += `
+      <li>
+        ${item.stop.attributes.name}
+        — ${(item.distKm * 1000).toFixed(0)} m away
+        — ${modeName(item.stop.attributes.vehicle_type)}
+        — ${item.routes}
+      </li>`;
+  }
+  html += "</ol>";
+
+  result.innerHTML = html;
+}
+</script>
+
+</body>
+</html>
