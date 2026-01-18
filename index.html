@@ -2,147 +2,154 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Transit Desert Checker (MBTA + RIPTA)</title>
+<title>Transit Desert Checker</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { font-family: Arial, sans-serif; margin: 2rem; max-width: 800px; }
-  input, button { padding: 0.6rem; font-size: 1rem; margin-top: 0.5rem; }
-  button { cursor: pointer; }
-  .warning { font-weight: bold; color: darkred; margin-top: 1rem; }
-  .good { font-weight: bold; color: darkgreen; margin-top: 1rem; }
-  ol { margin-top: 1rem; }
+body { font-family: Arial, sans-serif; margin: 2rem; max-width: 800px; }
+input, button { padding: .6rem; font-size: 1rem; margin-top: .5rem; }
+.warning { color: darkred; font-weight: bold; margin-top: 1rem; }
+.good { color: darkgreen; font-weight: bold; margin-top: 1rem; }
 </style>
 </head>
 <body>
 
 <h1>Transit Desert Checker</h1>
-<p>Checks MBTA (MA) and RIPTA (RI) transit access.</p>
 
-<input type="text" id="address" placeholder="Enter an address" size="40">
+<input id="address" placeholder="Enter an address" size="40">
 <br>
 <button onclick="checkTransit()">Check Transit Access</button>
 
 <div id="result"></div>
 
 <script>
-function haversine(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const toRad = d => d * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat/2)**2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+function haversine(a,b,c,d){
+  const R=6371,t=x=>x*Math.PI/180;
+  const dLat=t(c-a),dLon=t(d-b);
+  const q=Math.sin(dLat/2)**2+
+  Math.cos(t(a))*Math.cos(t(c))*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(q),Math.sqrt(1-q));
 }
 
-function modeName(type) {
-  return ["Light Rail / Subway","Heavy Rail","Commuter Rail","Bus","Ferry"][type] || "Other";
+function modeName(t){
+  return ["Light Rail / Subway","Heavy Rail","Commuter Rail","Bus","Ferry"][t]||"Other";
 }
 
-async function fetchRoutes(apiBase, stopId, vehicleType) {
-  const r = await fetch(`${apiBase}/routes?filter[stop]=${stopId}`);
-  const d = await r.json();
-  if (!d.data?.length) return "No route info";
+function fetchWithTimeout(url,ms=4000){
+  return Promise.race([
+    fetch(url),
+    new Promise((_,r)=>setTimeout(()=>r("timeout"),ms))
+  ]);
+}
 
-  if (vehicleType === 3) {
-    return d.data.map(r =>
-      r.attributes.long_name
-        ? `${r.attributes.short_name} (${r.attributes.long_name})`
-        : r.attributes.short_name
-    ).join(", ");
+async function getRoutes(api,stopId,type){
+  try{
+    const r=await fetchWithTimeout(`${api}/routes?filter[stop]=${stopId}`);
+    if(r==="timeout") return "Route info unavailable";
+    const d=await r.json();
+    if(!d.data?.length) return "No route info";
+
+    if(type===2){
+      const cr=d.data.find(x=>x.attributes.type===2);
+      return cr?`${cr.attributes.long_name} (CR)`:"Commuter Rail";
+    }
+
+    if(type===3){
+      return d.data.map(x=>
+        x.attributes.long_name
+        ? `${x.attributes.short_name} (${x.attributes.long_name})`
+        : x.attributes.short_name
+      ).join(", ");
+    }
+
+    return d.data.map(x=>x.attributes.long_name||x.attributes.short_name).join(", ");
+  }catch{
+    return "Route info unavailable";
   }
-
-  if (vehicleType === 2) {
-    const cr = d.data.find(r => r.attributes.type === 2);
-    return cr ? `${cr.attributes.long_name} (CR)` : "Commuter Rail";
-  }
-
-  return d.data.map(r =>
-    r.attributes.long_name || r.attributes.short_name
-  ).join(", ");
 }
 
-async function fetchStops(apiBase, agency, lat, lon) {
-  const r = await fetch(
-    `${apiBase}/stops?filter[latitude]=${lat}&filter[longitude]=${lon}&filter[radius]=5`
-  );
-  const d = await r.json();
-  return d.data.map(s => ({ stop: s, agency }));
+async function fetchStopsMBTA(lat,lon){
+  const r=await fetch(`https://api-v3.mbta.com/stops?filter[latitude]=${lat}&filter[longitude]=${lon}&filter[radius]=5`);
+  const d=await r.json();
+  return d.data.map(s=>({s,agency:"MBTA"}));
 }
 
-async function checkTransit() {
-  const addr = document.getElementById("address").value.trim();
-  const result = document.getElementById("result");
-  result.textContent = "Loading…";
-  if (!addr) return;
+async function fetchStopsRIPTA(lat,lon){
+  const r=await fetch(`https://api-v3.ripta.com/stops?filter[latitude]=${lat}&filter[longitude]=${lon}`);
+  const d=await r.json();
+  return d.data.map(s=>({s,agency:"RIPTA"}));
+}
 
-  const geo = await fetch(
-    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}`
-  ).then(r => r.json());
-  if (!geo.length) {
-    result.textContent = "Address not found.";
+async function checkTransit(){
+  const res=document.getElementById("result");
+  res.textContent="Loading…";
+
+  const addr=document.getElementById("address").value.trim();
+  if(!addr) return;
+
+  const g=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}`,{
+    headers:{'User-Agent':'TransitDesertChecker'}
+  }).then(r=>r.json());
+
+  if(!g.length){
+    res.textContent="Address not found.";
     return;
   }
 
-  const lat = +geo[0].lat;
-  const lon = +geo[0].lon;
+  const lat=+g[0].lat,lon=+g[0].lon;
 
-  const mbtaStops = await fetchStops("https://api-v3.mbta.com","MBTA",lat,lon);
-  const riptaStops = await fetchStops("https://api-v3.ripta.com","RIPTA",lat,lon);
+  const [mbta,ripta]=await Promise.all([
+    fetchStopsMBTA(lat,lon),
+    fetchStopsRIPTA(lat,lon)
+  ]);
 
-  const allStops = [...mbtaStops, ...riptaStops].map(o => ({
+  const all=[...mbta,...ripta].map(o=>({
     ...o,
-    distKm: haversine(lat,lon,o.stop.attributes.latitude,o.stop.attributes.longitude)
+    d:haversine(lat,lon,o.s.attributes.latitude,o.s.attributes.longitude)
   }));
 
-  const seen = new Set();
-  const unique = [];
-  for (const s of allStops) {
-    const parent = s.stop.relationships?.parent_station?.data?.id;
-    const key = `${s.agency}-${parent || s.stop.id}`;
-    if (!seen.has(key)) {
-      unique.push(s);
-      seen.add(key);
+  const seen=new Set(),unique=[];
+  for(const o of all){
+    const p=o.s.relationships?.parent_station?.data?.id;
+    const k=o.agency+"-"+(p||o.s.id);
+    if(!seen.has(k)){
+      seen.add(k);
+      unique.push(o);
     }
   }
 
-  unique.sort((a,b) => a.distKm - b.distKm);
-  const top3 = unique.slice(0,3);
+  unique.sort((a,b)=>a.d-b.d);
+  const top3=unique.slice(0,3);
 
-  for (const s of top3) {
-    s.routes = await fetchRoutes(
-      s.agency === "MBTA"
+  const routes=await Promise.all(top3.map(o=>
+    getRoutes(
+      o.agency==="MBTA"
         ? "https://api-v3.mbta.com"
         : "https://api-v3.ripta.com",
-      s.stop.id,
-      s.stop.attributes.vehicle_type
-    );
-  }
+      o.s.id,
+      o.s.attributes.vehicle_type
+    )
+  ));
 
-  let html = "";
-  if (top3[0].distKm > 1.5) {
-    html += `<div class="warning">You are in a transit desert.</div>`;
-  } else {
-    html += `<div class="good">You have reasonable transit access.</div>`;
-  }
+  let html = top3[0].d>1.5
+    ? `<div class="warning">You are in a transit desert.</div>`
+    : `<div class="good">You have reasonable transit access.</div>`;
 
-  html += "<ol>";
-  for (const s of top3) {
-    html += `<li>
-      ${s.stop.attributes.name}
-      — ${(s.distKm*1000).toFixed(0)} m away
-      — ${modeName(s.stop.attributes.vehicle_type)}
-      — ${s.routes}
-      — ${s.agency}
+  html+="<ol>";
+  top3.forEach((o,i)=>{
+    html+=`<li>
+      ${o.s.attributes.name}
+      — ${(o.d*1000).toFixed(0)} m away
+      — ${modeName(o.s.attributes.vehicle_type)}
+      — ${routes[i]}
+      — ${o.agency}
     </li>`;
-  }
-  html += "</ol>";
+  });
+  html+="</ol>";
 
-  result.innerHTML = html;
+  res.innerHTML=html;
 }
 </script>
 
 </body>
 </html>
+
