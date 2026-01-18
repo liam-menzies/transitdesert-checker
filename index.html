@@ -5,10 +5,10 @@
 <title>Transit Desert Checker</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-body { font-family: Arial, sans-serif; margin: 2rem; max-width: 800px; }
-input, button { padding: .6rem; font-size: 1rem; margin-top: .5rem; }
-.warning { color: darkred; font-weight: bold; margin-top: 1rem; }
-.good { color: darkgreen; font-weight: bold; margin-top: 1rem; }
+body{font-family:Arial,sans-serif;margin:2rem;max-width:800px}
+input,button{padding:.6rem;font-size:1rem;margin-top:.5rem}
+.warning{color:darkred;font-weight:bold;margin-top:1rem}
+.good{color:darkgreen;font-weight:bold;margin-top:1rem}
 </style>
 </head>
 <body>
@@ -23,133 +23,104 @@ input, button { padding: .6rem; font-size: 1rem; margin-top: .5rem; }
 
 <script>
 function haversine(a,b,c,d){
-  const R=6371,t=x=>x*Math.PI/180;
-  const dLat=t(c-a),dLon=t(d-b);
-  const q=Math.sin(dLat/2)**2+
-  Math.cos(t(a))*Math.cos(t(c))*Math.sin(dLon/2)**2;
-  return R*2*Math.atan2(Math.sqrt(q),Math.sqrt(1-q));
+const R=6371,t=x=>x*Math.PI/180
+const dLat=t(c-a),dLon=t(d-b)
+const q=Math.sin(dLat/2)**2+Math.cos(t(a))*Math.cos(t(c))*Math.sin(dLon/2)**2
+return R*2*Math.atan2(Math.sqrt(q),Math.sqrt(1-q))
 }
 
 function modeName(t){
-  return ["Light Rail / Subway","Heavy Rail","Commuter Rail","Bus","Ferry"][t]||"Other";
+return["Light Rail / Subway","Heavy Rail","Commuter Rail","Bus","Ferry"][t]||"Other"
 }
 
-function fetchWithTimeout(url,ms=4000){
-  return Promise.race([
-    fetch(url),
-    new Promise((_,r)=>setTimeout(()=>r("timeout"),ms))
-  ]);
+async function getRoutes(id,type){
+const r=await fetch(`https://api-v3.mbta.com/routes?filter[stop]=${id}`)
+const d=await r.json()
+if(!d.data?.length)return"No route info"
+
+if(type===2){
+const cr=d.data.find(x=>x.attributes.type===2)
+return cr?`${cr.attributes.long_name} (CR)`:"Commuter Rail"
 }
 
-async function getRoutes(api,stopId,type){
-  try{
-    const r=await fetchWithTimeout(`${api}/routes?filter[stop]=${stopId}`);
-    if(r==="timeout") return "Route info unavailable";
-    const d=await r.json();
-    if(!d.data?.length) return "No route info";
-
-    if(type===2){
-      const cr=d.data.find(x=>x.attributes.type===2);
-      return cr?`${cr.attributes.long_name} (CR)`:"Commuter Rail";
-    }
-
-    if(type===3){
-      return d.data.map(x=>
-        x.attributes.long_name
-        ? `${x.attributes.short_name} (${x.attributes.long_name})`
-        : x.attributes.short_name
-      ).join(", ");
-    }
-
-    return d.data.map(x=>x.attributes.long_name||x.attributes.short_name).join(", ");
-  }catch{
-    return "Route info unavailable";
-  }
+if(type===3){
+return d.data.map(x=>
+x.attributes.long_name
+?`${x.attributes.short_name} (${x.attributes.long_name})`
+:x.attributes.short_name
+).join(", ")
 }
 
-async function fetchStopsMBTA(lat,lon){
-  const r=await fetch(`https://api-v3.mbta.com/stops?filter[latitude]=${lat}&filter[longitude]=${lon}&filter[radius]=5`);
-  const d=await r.json();
-  return d.data.map(s=>({s,agency:"MBTA"}));
+if(type===4){
+return d.data.map(x=>
+`${x.attributes.long_name} (Ferry)`
+).join(", ")
 }
 
-async function fetchStopsRIPTA(lat,lon){
-  const r=await fetch(`https://api-v3.ripta.com/stops?filter[latitude]=${lat}&filter[longitude]=${lon}`);
-  const d=await r.json();
-  return d.data.map(s=>({s,agency:"RIPTA"}));
+return d.data.map(x=>x.attributes.long_name||x.attributes.short_name).join(", ")
 }
 
 async function checkTransit(){
-  const res=document.getElementById("result");
-  res.textContent="Loading…";
+const res=document.getElementById("result")
+res.textContent="Loading…"
 
-  const addr=document.getElementById("address").value.trim();
-  if(!addr) return;
+const addr=document.getElementById("address").value.trim()
+if(!addr)return
 
-  const g=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}`,{
-    headers:{'User-Agent':'TransitDesertChecker'}
-  }).then(r=>r.json());
+const g=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}`,{
+headers:{'User-Agent':'TransitDesertChecker'}
+}).then(r=>r.json())
 
-  if(!g.length){
-    res.textContent="Address not found.";
-    return;
-  }
+if(!g.length){
+res.textContent="Address not found."
+return
+}
 
-  const lat=+g[0].lat,lon=+g[0].lon;
+const lat=+g[0].lat,lon=+g[0].lon
 
-  const [mbta,ripta]=await Promise.all([
-    fetchStopsMBTA(lat,lon),
-    fetchStopsRIPTA(lat,lon)
-  ]);
+const r=await fetch(`https://api-v3.mbta.com/stops?filter[latitude]=${lat}&filter[longitude]=${lon}&filter[radius]=5`)
+const d=await r.json()
 
-  const all=[...mbta,...ripta].map(o=>({
-    ...o,
-    d:haversine(lat,lon,o.s.attributes.latitude,o.s.attributes.longitude)
-  }));
+const all=d.data.map(s=>({
+s,
+dist:haversine(lat,lon,s.attributes.latitude,s.attributes.longitude)
+}))
 
-  const seen=new Set(),unique=[];
-  for(const o of all){
-    const p=o.s.relationships?.parent_station?.data?.id;
-    const k=o.agency+"-"+(p||o.s.id);
-    if(!seen.has(k)){
-      seen.add(k);
-      unique.push(o);
-    }
-  }
+const seen=new Set(),unique=[]
+for(const o of all){
+const p=o.s.relationships?.parent_station?.data?.id
+const k=p||o.s.id
+if(!seen.has(k)){
+seen.add(k)
+unique.push(o)
+}
+}
 
-  unique.sort((a,b)=>a.d-b.d);
-  const top3=unique.slice(0,3);
+unique.sort((a,b)=>a.dist-b.dist)
+const top3=unique.slice(0,3)
 
-  const routes=await Promise.all(top3.map(o=>
-    getRoutes(
-      o.agency==="MBTA"
-        ? "https://api-v3.mbta.com"
-        : "https://api-v3.ripta.com",
-      o.s.id,
-      o.s.attributes.vehicle_type
-    )
-  ));
+for(const o of top3){
+o.routes=await getRoutes(o.s.id,o.s.attributes.vehicle_type)
+}
 
-  let html = top3[0].d>1.5
-    ? `<div class="warning">You are in a transit desert.</div>`
-    : `<div class="good">You have reasonable transit access.</div>`;
+let html=top3[0].dist>1.5
+?`<div class="warning">You are in a transit desert.</div>`
+:`<div class="good">You have reasonable transit access.</div>`
 
-  html+="<ol>";
-  top3.forEach((o,i)=>{
-    html+=`<li>
-      ${o.s.attributes.name}
-      — ${(o.d*1000).toFixed(0)} m away
-      — ${modeName(o.s.attributes.vehicle_type)}
-      — ${routes[i]}
-      — ${o.agency}
-    </li>`;
-  });
-  html+="</ol>";
+html+="<ol>"
+for(const o of top3){
+html+=`<li>
+${o.s.attributes.name}
+— ${(o.dist*1000).toFixed(0)} m away
+— ${modeName(o.s.attributes.vehicle_type)}
+— ${o.routes}
+</li>`
+}
+html+="</ol>"
 
-  res.innerHTML=html;
+res.innerHTML=html
 }
 </script>
 
 </body>
 </html>
-
